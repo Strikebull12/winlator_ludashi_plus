@@ -59,6 +59,7 @@ import com.winlator.cmod.contents.RemoteDriverCatalog
 import com.winlator.cmod.core.DefaultVersion
 import com.winlator.cmod.core.GPUInformation
 import com.winlator.cmod.core.ProtonPackageManager
+import com.winlator.cmod.core.StringUtils
 import com.winlator.cmod.core.WineInfo
 import com.winlator.cmod.core.WineRuntimeGuard
 import com.winlator.cmod.core.WineThemeManager
@@ -78,6 +79,10 @@ internal data class DriverOption(
     val installed: Boolean,
     val remoteUrl: String? = null
 )
+
+internal fun graphicsDriverLabel(entries: List<String>, id: String): String {
+    return entries.firstOrNull { StringUtils.parseIdentifier(it).equals(id, true) } ?: id
+}
 internal data class WineRuntimeOption(
     val id: String,
     val label: String,

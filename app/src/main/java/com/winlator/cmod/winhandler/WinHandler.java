@@ -62,6 +62,7 @@ public class WinHandler {
 
     private static final int MAX_CONTROLLERS = 4;
     private static final int OSC_DEVICE_ID = -1;
+    public static final String PREF_CONTROLLER_SLOT_PREFIX = "controller_slot_";
     private FakeInputWriter[] writers = new FakeInputWriter[MAX_CONTROLLERS];
     private Map<Integer, Integer> deviceToSlot = new HashMap<>();
     private Set<Integer> usedSlots = new HashSet<>();
@@ -72,10 +73,16 @@ public class WinHandler {
 
     private boolean xinputDisabled;
     private boolean xinputDisabledInitialized = false;
+    private byte triggerType;
 
     private int fallbackSlot = -1;
 
     private final Map<Integer, ExternalController> controllers = new HashMap<>();
+    private final GamepadState gyroSyntheticState = new GamepadState();
+    private boolean gyroActive;
+    private boolean gyroRightStick;
+    private float gyroX;
+    private float gyroY;
     private final InputManager inputManager;
     private final InputManager.InputDeviceListener inputDeviceListener;
 
@@ -96,6 +103,8 @@ public class WinHandler {
         };
         inputManager.registerInputDeviceListener(inputDeviceListener, null);
         preferences = PreferenceManager.getDefaultSharedPreferences(activity.getBaseContext());
+        triggerType = ExternalController.normalizeTriggerType(
+                preferences.getInt("trigger_type", ExternalController.TRIGGER_IS_AXIS));
         for (int i = 0; i < MAX_CONTROLLERS; i++) {
             vibrationEnabledSlots[i] = preferences.getBoolean("vibration_slot_" + i, true);
         }
@@ -547,49 +556,149 @@ public class WinHandler {
         if (useVirtualGamepad) {
             int slot = assignSlot(OSC_DEVICE_ID);
             if (slot >= 0 && writers[slot] != null) {
-                writers[slot].writeGamepadState(gamepadState);
+                writeGamepadState(OSC_DEVICE_ID, gamepadState, writers[slot]);
             }
-        } else {
+        } else if (!gyroActive) {
             releaseSlot(OSC_DEVICE_ID);
         }
     }
 
     public void sendGamepadState(ExternalController controller) {
         if (controller == null) return;
+        ControlsProfile activeProfile = activity.getInputControlsView().getProfile();
+        if (deviceToSlot.containsKey(OSC_DEVICE_ID)
+                && (activeProfile == null || !activeProfile.isVirtualGamepad())) releaseSlot(OSC_DEVICE_ID);
         ControlsProfile profile = activity.getInputControlsView().getProfile();
         if (profile != null) {
             ExternalController profileController = profile.getController(controller.getDeviceId());
             if (profileController != null && profileController.getControllerBindingCount() > 0) {
                 int slot = assignSlot(controller.getDeviceId());
                 if (slot >= 0 && writers[slot] != null) {
-                    writers[slot].writeGamepadState(controller.remappedState);
+                    writeGamepadState(controller.getDeviceId(), controller.remappedState, writers[slot]);
                 }
                 return;
             }
         }
         int slot = assignSlot(controller.getDeviceId());
         if (slot >= 0 && writers[slot] != null) {
-            writers[slot].writeGamepadState(controller.state);
+            writeGamepadState(controller.getDeviceId(), controller.state, writers[slot]);
         }
+    }
+
+    private void writeGamepadState(int deviceId, GamepadState state, FakeInputWriter writer) {
+        Integer slot = deviceToSlot.get(deviceId);
+        int firstSlot = MAX_CONTROLLERS;
+        for (Integer value : deviceToSlot.values()) firstSlot = Math.min(firstSlot, value);
+        if (!gyroActive || slot == null || slot != firstSlot) {
+            writer.writeGamepadState(state);
+            return;
+        }
+        float oldX = gyroRightStick ? state.thumbRX : state.thumbLX;
+        float oldY = gyroRightStick ? state.thumbRY : state.thumbLY;
+        if (gyroRightStick) {
+            state.thumbRX = gyroX;
+            state.thumbRY = gyroY;
+        } else {
+            state.thumbLX = gyroX;
+            state.thumbLY = gyroY;
+        }
+        writer.writeGamepadState(state);
+        if (gyroRightStick) {
+            state.thumbRX = oldX;
+            state.thumbRY = oldY;
+        } else {
+            state.thumbLX = oldX;
+            state.thumbLY = oldY;
+        }
+    }
+
+    public void sendGyroStick(boolean rightStick, float x, float y) {
+        gyroActive = true;
+        gyroRightStick = rightStick;
+        gyroX = Math.max(-1, Math.min(1, x));
+        gyroY = Math.max(-1, Math.min(1, y));
+        resendGyroController();
+    }
+
+    public void clearGyroStick() {
+        if (!gyroActive) return;
+        gyroActive = false;
+        resendGyroController();
+    }
+
+    private void resendGyroController() {
+        int firstDevice = Integer.MIN_VALUE;
+        int firstSlot = MAX_CONTROLLERS;
+        for (Map.Entry<Integer, Integer> entry : deviceToSlot.entrySet()) {
+            if (entry.getValue() < firstSlot) {
+                firstDevice = entry.getKey();
+                firstSlot = entry.getValue();
+            }
+        }
+        if (firstDevice != OSC_DEVICE_ID) {
+            ExternalController controller = controllers.get(firstDevice);
+            if (controller != null) {
+                sendGamepadState(controller);
+                return;
+            }
+        }
+        ControlsProfile profile = activity.getInputControlsView().getProfile();
+        GamepadState state = profile != null && profile.isVirtualGamepad()
+                ? profile.getGamepadState() : gyroSyntheticState;
+        int slot = assignSlot(OSC_DEVICE_ID);
+        if (slot >= 0 && writers[slot] != null) writeGamepadState(OSC_DEVICE_ID, state, writers[slot]);
+    }
+
+    public boolean isButtonPressed(int keyCode) {
+        int button = ExternalController.getButtonIdxByKeyCode(keyCode);
+        if (button < 0) return false;
+        ControlsProfile profile = activity.getInputControlsView().getProfile();
+        if (profile != null && pressed(profile.getGamepadState(), button)) return true;
+        for (ExternalController controller : controllers.values()) {
+            if (pressed(controller.state, button) || pressed(controller.remappedState, button)) return true;
+        }
+        return false;
+    }
+
+    private static boolean pressed(GamepadState state, int button) {
+        if (button == ExternalController.IDX_BUTTON_L2 && state.triggerL > 0.5f) return true;
+        if (button == ExternalController.IDX_BUTTON_R2 && state.triggerR > 0.5f) return true;
+        return state.isPressed(button);
     }
 
     private int assignSlot(int deviceId) {
         Integer existing = deviceToSlot.get(deviceId);
         if (existing != null) return existing;
+
+        int preferredSlot = getPreferredSlot(deviceId);
+        if (preferredSlot >= 0 && !usedSlots.contains(preferredSlot)) return claimSlot(deviceId, preferredSlot);
+
         for (int slot = 0; slot < MAX_CONTROLLERS; slot++) {
-            if (!usedSlots.contains(slot)) {
-                usedSlots.add(slot);
-                deviceToSlot.put(deviceId, slot);
-                if (fakeInputBasePath != null && writers[slot] == null) {
-                    writers[slot] = new FakeInputWriter(fakeInputBasePath, slot);
-                    writers[slot].open();
-                    Log.d("WinHandler", "Assigned device " + deviceId + " to slot " + slot);
-                }
-                return slot;
-            }
+            if (!usedSlots.contains(slot) && preferences.getString(PREF_CONTROLLER_SLOT_PREFIX + slot, null) == null)
+                return claimSlot(deviceId, slot);
         }
         Log.w("WinHandler", "No slots available for device " + deviceId);
         return -1;
+    }
+
+    private int getPreferredSlot(int deviceId) {
+        android.view.InputDevice device = android.view.InputDevice.getDevice(deviceId);
+        if (device == null) return -1;
+        for (int slot = 0; slot < MAX_CONTROLLERS; slot++) {
+            if (device.getDescriptor().equals(preferences.getString(PREF_CONTROLLER_SLOT_PREFIX + slot, null))) return slot;
+        }
+        return -1;
+    }
+
+    private int claimSlot(int deviceId, int slot) {
+        usedSlots.add(slot);
+        deviceToSlot.put(deviceId, slot);
+        if (fakeInputBasePath != null && writers[slot] == null) {
+            writers[slot] = new FakeInputWriter(fakeInputBasePath, slot);
+            writers[slot].open();
+        }
+        Log.d("WinHandler", "Assigned device " + deviceId + " to slot " + slot);
+        return slot;
     }
 
     private void releaseSlot(int deviceId) {
@@ -645,7 +754,10 @@ public class WinHandler {
     private ExternalController getController(int deviceId) {
         if (controllers.containsKey(deviceId)) return controllers.get(deviceId);
         ExternalController controller = ExternalController.getController(deviceId);
-        if (controller != null) controllers.put(deviceId, controller);
+        if (controller != null) {
+            controller.setTriggerType(triggerType);
+            controllers.put(deviceId, controller);
+        }
         return controller;
     }
 
@@ -675,5 +787,10 @@ public class WinHandler {
 
     public void setInputType(byte inputType) {
         this.inputType = inputType;
+    }
+
+    public void setTriggerType(int triggerType) {
+        this.triggerType = ExternalController.normalizeTriggerType(triggerType);
+        for (ExternalController controller : controllers.values()) controller.setTriggerType(this.triggerType);
     }
 }

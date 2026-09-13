@@ -30,7 +30,24 @@ public class Container {
     }
     public static final String DEFAULT_ENV_VARS = "WINE_FAST_YIELD=1 WRAPPER_MAX_IMAGE_COUNT=0 VKD3D_SHADER_MODEL=6_6 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=1 TU_DEBUG=noconform,sysmem DXVK_HUD=devinfo,version,gpuload,fps DXVK_DISABLE_TIMELINE_SEMAPHORES=1";
     public static final String DEFAULT_SCREEN_SIZE = "1280x720";
+
+    /** Panel-shaped default for new containers; existing container data is never changed. */
+    public static String defaultScreenSizeFor(android.content.Context context) {
+        android.hardware.display.DisplayManager manager = (android.hardware.display.DisplayManager)
+                context.getSystemService(android.content.Context.DISPLAY_SERVICE);
+        android.view.Display display = manager != null
+                ? manager.getDisplay(android.view.Display.DEFAULT_DISPLAY) : null;
+        if (display == null) return DEFAULT_SCREEN_SIZE;
+        android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+        display.getRealMetrics(metrics);
+        return defaultScreenSizeForPanel(metrics.widthPixels, metrics.heightPixels);
+    }
+
+    public static String defaultScreenSizeForPanel(int width, int height) {
+        return com.winlator.cmod.core.FrameGenDisplayFit.defaultScreenSize(width, height);
+    }
     public static final String DEFAULT_GRAPHICS_DRIVER = "zink";
+    public static final String DEFAULT_GRAPHICS_WRAPPER = "wrapper";
     public static final String DEFAULT_AUDIO_DRIVER = "pulse-audio-gn";
     public static final String DEFAULT_EMULATOR = "FEXCore";
     public static final String DEFAULT_DXWRAPPER = "dxvk+vkd3d";
@@ -132,6 +149,23 @@ public class Container {
 
     public void setGraphicsDriver(String graphicsDriver) {
         this.graphicsDriver = graphicsDriver;
+    }
+
+    public String getGraphicsWrapper() {
+        return normalizeGraphicsWrapper(getExtra("graphicsWrapper", DEFAULT_GRAPHICS_WRAPPER));
+    }
+
+    public void setGraphicsWrapper(String graphicsWrapper) {
+        putExtra("graphicsWrapper", normalizeGraphicsWrapper(graphicsWrapper));
+    }
+
+    public static String normalizeGraphicsWrapper(String graphicsWrapper) {
+        if (graphicsWrapper == null) return DEFAULT_GRAPHICS_WRAPPER;
+        String value = graphicsWrapper.toLowerCase(Locale.ENGLISH);
+        if (value.equals("wrapper-original") || value.equals("wrapper-v2")) return "wrapper-winnative";
+        if (value.equals("wrapper-winnative") || value.equals("wrapper-leegao") || value.equals("wrapper-legacy"))
+            return value;
+        return DEFAULT_GRAPHICS_WRAPPER;
     }
 
     public String getGraphicsDriverConfig() {
@@ -701,7 +735,19 @@ public class Container {
             }
             if (data.has("graphicsDriver")) {
                 String graphicsDriver = data.getString("graphicsDriver");
-                if (graphicsDriver.equals("wrapper") || graphicsDriver.equals("turnip-zink") || graphicsDriver.equals("turnip") || graphicsDriver.equals("llvmpipe")) {
+                if (graphicsDriver.startsWith("wrapper")) {
+                    if (data.has("id")) {
+                        JSONObject extraData = data.optJSONObject("extraData");
+                        if (extraData == null) extraData = new JSONObject();
+                        if (!extraData.has("graphicsWrapper"))
+                            extraData.put("graphicsWrapper", normalizeGraphicsWrapper(graphicsDriver));
+                        data.put("extraData", extraData);
+                    } else if (!data.has("graphicsWrapper")) {
+                        data.put("graphicsWrapper", normalizeGraphicsWrapper(graphicsDriver));
+                    }
+                    data.put("graphicsDriver", DEFAULT_GRAPHICS_DRIVER);
+                }
+                else if (graphicsDriver.equals("turnip-zink") || graphicsDriver.equals("turnip") || graphicsDriver.equals("llvmpipe")) {
                     data.put("graphicsDriver", DEFAULT_GRAPHICS_DRIVER);
                 }
             }

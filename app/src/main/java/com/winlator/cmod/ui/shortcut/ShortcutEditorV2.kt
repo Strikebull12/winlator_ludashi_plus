@@ -71,6 +71,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.Fragment
+import androidx.preference.PreferenceManager
 import com.winlator.cmod.R
 import com.winlator.cmod.ShortcutsFragment
 import com.winlator.cmod.XrActivity
@@ -87,6 +88,7 @@ import com.winlator.cmod.core.OpenGLDriverDefaults
 import com.winlator.cmod.core.StringUtils
 import com.winlator.cmod.fexcore.FEXCorePresetManager
 import com.winlator.cmod.inputcontrols.InputControlsManager
+import com.winlator.cmod.inputcontrols.ExternalController
 import com.winlator.cmod.midi.MidiManager
 import com.winlator.cmod.ui.settings.ContainersSettingsActivity
 import com.winlator.cmod.ui.settings.CpuSelectorRow
@@ -108,6 +110,7 @@ import com.winlator.cmod.ui.settings.dxvkAsyncMode
 import com.winlator.cmod.ui.settings.envPut
 import com.winlator.cmod.ui.settings.envValue
 import com.winlator.cmod.ui.settings.filterDxvkForVkd3d
+import com.winlator.cmod.ui.settings.graphicsDriverLabel
 import com.winlator.cmod.ui.settings.installAdrenoDriver
 import com.winlator.cmod.ui.settings.installRuntimeComponent
 import com.winlator.cmod.ui.settings.isDxvkCompatibleWithVkd3d
@@ -150,6 +153,8 @@ private val execArgumentPresetsV2 = listOf(
     "/d3d9"
 )
 
+private val triggerModeEntries = listOf("As Button", "As Axis", "Both")
+
 private data class ShortcutCategoryItemV2(val label: String, val icon: ImageVector)
 
 private class ShortcutEditorStateV2(val shortcut: Shortcut) {
@@ -173,6 +178,9 @@ private class ShortcutEditorStateV2(val shortcut: Shortcut) {
     var lsfgFlowScale by mutableStateOf(shortcut.getLsfgFlowScale())
 
     var graphicsDriver by mutableStateOf(StringUtils.parseIdentifier(shortcut.getExtra("graphicsDriver", container.getGraphicsDriver())))
+    var graphicsWrapper by mutableStateOf(Container.normalizeGraphicsWrapper(
+        shortcut.getExtra("graphicsWrapper", container.getGraphicsWrapper())
+    ))
     private val defaultDriverVersion = runCatching {
         val context = container.manager.context
         if (GPUInformation.isDriverSupported(DefaultVersion.WRAPPER_ADRENO, context)) DefaultVersion.WRAPPER_ADRENO else DefaultVersion.WRAPPER
@@ -209,6 +217,8 @@ private class ShortcutEditorStateV2(val shortcut: Shortcut) {
     var vkd3dLevel by mutableStateOf(readConfig(wrapperConfig, "vkd3dLevel", ',').ifBlank { "12_1" })
     var frameRate by mutableStateOf(readConfig(wrapperConfig, "framerate", ',').ifBlank { "0" })
     var maxFrameLatency by mutableStateOf(readConfig(wrapperConfig, "maxFrameLatency", ',') == "1")
+    var anisotropy by mutableStateOf(readConfig(wrapperConfig, "anisotropy", ',').ifBlank { "0" })
+    var lodBias by mutableStateOf(readConfig(wrapperConfig, "lodBias", ',').ifBlank { "0" })
     var async by mutableStateOf(readConfig(wrapperConfig, "async", ',') == "1")
     var asyncCache by mutableStateOf(readConfig(wrapperConfig, "asyncCache", ',') == "1")
     var ddrawWrapper by mutableStateOf(readConfig(wrapperConfig, "ddrawrapper", ',').ifBlank { "wined3d" })
@@ -226,6 +236,16 @@ private class ShortcutEditorStateV2(val shortcut: Shortcut) {
     var boxPreset by mutableStateOf(shortcut.getExtra("box64Preset", container.getBox64Preset()))
 
     var controlsProfile by mutableStateOf(shortcut.getExtra("controlsProfile", "0"))
+    var triggerMode by mutableIntStateOf(
+        shortcut.getExtra(
+            "triggerType",
+            PreferenceManager.getDefaultSharedPreferences(container.manager.context)
+                .getInt("trigger_type", ExternalController.TRIGGER_IS_AXIS.toInt()).toString()
+        ).toIntOrNull()?.coerceIn(
+            ExternalController.TRIGGER_IS_BUTTON.toInt(),
+            ExternalController.TRIGGER_IS_BOTH.toInt()
+        ) ?: ExternalController.TRIGGER_IS_AXIS.toInt()
+    )
     var fullscreen by mutableStateOf(shortcut.getExtra("fullscreenStretched", "0") == "1")
     private var inputType by mutableIntStateOf(shortcut.getExtra("inputType", container.getInputType().toString()).toIntOrNull() ?: container.getInputType())
     var exclusive by mutableStateOf(shortcut.getExtra("exclusiveXInput").let { if (it.isBlank()) container.isExclusiveXInput() else it == "1" })
@@ -441,6 +461,7 @@ internal fun ShortcutEditorV2(fragment: Fragment, shortcut: Shortcut, close: () 
 
     val screenEntries = remember { context.resources.getStringArray(R.array.screen_size_entries).toList() }
     val graphicsEntries = remember { context.resources.getStringArray(R.array.graphics_driver_entries).toList() }
+    val graphicsWrapperEntries = remember { context.resources.getStringArray(R.array.graphics_wrapper_entries).toList() }
     val audioEntries = remember { context.resources.getStringArray(R.array.audio_driver_entries).toList() }
     val wrapperEntries = remember { context.resources.getStringArray(R.array.dxwrapper_entries).toList() }
     val localeEntries = remember { listOf("Default") + context.resources.getStringArray(R.array.some_lc_all).toList() }
@@ -575,7 +596,7 @@ internal fun ShortcutEditorV2(fragment: Fragment, shortcut: Shortcut, close: () 
                 ) {
                     item(category) {
                         ShortcutCategoryV2(
-                            category, state, catalog, screenEntries, graphicsEntries, audioEntries,
+                            category, state, catalog, screenEntries, graphicsEntries, graphicsWrapperEntries, audioEntries,
                             wrapperEntries, localeEntries, soundFonts, gpuNames, fexPresets, boxPresets,
                             profiles, containers, ::environmentLabel, ::changeContainer, ::createContainer, ::enterContainer,
                             ::installRuntime, ::installDriver, context
@@ -601,7 +622,7 @@ internal fun ShortcutEditorV2(fragment: Fragment, shortcut: Shortcut, close: () 
                 ) {
                     item(category) {
                         ShortcutCategoryV2(
-                            category, state, catalog, screenEntries, graphicsEntries, audioEntries,
+                            category, state, catalog, screenEntries, graphicsEntries, graphicsWrapperEntries, audioEntries,
                             wrapperEntries, localeEntries, soundFonts, gpuNames, fexPresets, boxPresets,
                             profiles, containers, ::environmentLabel, ::changeContainer, ::createContainer, ::enterContainer,
                             ::installRuntime, ::installDriver, context
@@ -644,6 +665,7 @@ private fun ShortcutCategoryV2(
     catalog: SettingsCatalog?,
     screenEntries: List<String>,
     graphicsEntries: List<String>,
+    graphicsWrapperEntries: List<String>,
     audioEntries: List<String>,
     wrapperEntries: List<String>,
     localeEntries: List<String>,
@@ -779,7 +801,7 @@ private fun ShortcutCategoryV2(
                 SettingsDivider()
                 SettingChoice("Renderer", s.renderer, listOf("Vulkan", "EGL", "DisplayX")) {
                     s.renderer = it
-                    if (it == "EGL" && s.filterMode > 1) s.filterMode = 0
+                    if (it == "EGL" && s.filterMode !in listOf(0, 1, 2, 5)) s.filterMode = 0
                     s.saveRenderer()
                 }
                 SettingsDivider()
@@ -833,10 +855,11 @@ private fun ShortcutCategoryV2(
                         }
                     }
                     SettingsDivider()
-                    val filters = if (s.renderer == "EGL") listOf("Bilinear", "Nearest neighbor")
-                    else listOf("Bilinear", "Nearest neighbor", "Snapdragon Super Resolution", "AMD FidelityFX Super Resolution", "Lanczos 2 (16-tap)")
-                    SettingChoice("Texture Filter", filters.getOrElse(s.filterMode) { filters.first() }, filters) {
-                        s.filterMode = filters.indexOf(it).coerceAtLeast(0)
+                    val filters = if (s.renderer == "EGL") listOf(0 to "Bilinear", 1 to "Nearest neighbor", 2 to "Snapdragon Super Resolution", 5 to "SGSR HQ (edge direction)")
+                    else listOf(0 to "Bilinear", 1 to "Nearest neighbor", 2 to "Snapdragon Super Resolution", 5 to "SGSR HQ (edge direction)", 3 to "AMD FidelityFX Super Resolution", 4 to "Lanczos 2 (16-tap)")
+                    val labels = filters.map { it.second }
+                    SettingChoice("Texture Filter", filters.firstOrNull { it.first == s.filterMode }?.second ?: labels.first(), labels) {
+                        s.filterMode = filters.firstOrNull { entry -> entry.second == it }?.first ?: 0
                         s.saveRenderer()
                     }
                 }
@@ -855,8 +878,19 @@ private fun ShortcutCategoryV2(
                 }
             }
             SettingsCard {
-                SettingChoice("Graphics Driver", graphicsEntries.firstOrNull { StringUtils.parseIdentifier(it).equals(s.graphicsDriver, true) } ?: s.graphicsDriver, graphicsEntries) {
+                SettingChoice("OpenGL Driver", graphicsDriverLabel(graphicsEntries, s.graphicsDriver), graphicsEntries) {
                     s.selectGraphicsDriver(StringUtils.parseIdentifier(it))
+                }
+                SettingsDivider()
+                SettingChoice(
+                    "Vulkan Wrapper",
+                    graphicsWrapperEntries.firstOrNull {
+                        StringUtils.parseIdentifier(it).equals(s.graphicsWrapper, true)
+                    } ?: s.graphicsWrapper,
+                    graphicsWrapperEntries
+                ) {
+                    s.graphicsWrapper = StringUtils.parseIdentifier(it)
+                    s.extra("graphicsWrapper", s.graphicsWrapper)
                 }
                 catalog?.let { c ->
                     SettingsDivider()
@@ -937,6 +971,14 @@ private fun ShortcutCategoryV2(
                     SettingText("Frame Rate", s.frameRate) { s.frameRate = it.filter(Char::isDigit).take(4); s.wrapperValue("framerate", s.frameRate.ifBlank { "0" }) }
                     SettingsDivider()
                     SettingToggle("Max Frame Latency", s.maxFrameLatency) { s.maxFrameLatency = it; s.wrapperValue("maxFrameLatency", if (it) "1" else "0") }
+                    SettingsDivider()
+                    SettingChoice("Anisotropic filtering", if (s.anisotropy == "0") "Game default" else "${s.anisotropy}×", listOf("Game default", "2×", "4×", "8×", "16×")) {
+                        s.anisotropy = if (it == "Game default") "0" else it.removeSuffix("×"); s.wrapperValue("anisotropy", s.anisotropy)
+                    }
+                    SettingsDivider()
+                    SettingChoice("Texture sharpness", if (s.lodBias == "0") "Game default" else if (s.lodBias == "auto") "Auto" else s.lodBias, listOf("Game default", "Auto", "-0.25", "-0.5", "-0.75", "-1.0")) {
+                        s.lodBias = when (it) { "Game default" -> "0"; "Auto" -> "auto"; else -> it }; s.wrapperValue("lodBias", s.lodBias)
+                    }
                     val asyncMode = dxvkAsyncMode(s.dxvkVersion)
                     if (asyncMode != DxvkAsyncMode.NONE) {
                         SettingsDivider()
@@ -995,6 +1037,11 @@ private fun ShortcutCategoryV2(
         "Input" -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SettingsCard {
                 SettingMappedChoice("Controls Profile", s.controlsProfile, profiles) { s.controlsProfile = it; s.extra("controlsProfile", it.takeUnless { id -> id == "0" }) }
+                SettingsDivider()
+                SettingChoice("Trigger Mode", triggerModeEntries[s.triggerMode], triggerModeEntries) {
+                    s.triggerMode = triggerModeEntries.indexOf(it)
+                    s.extra("triggerType", s.triggerMode.toString())
+                }
                 SettingsDivider()
                 SettingToggle("Exclusive Input", s.exclusive) {
                     s.exclusive = it

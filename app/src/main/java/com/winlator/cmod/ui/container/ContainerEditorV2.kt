@@ -97,6 +97,7 @@ import com.winlator.cmod.ui.settings.dxvkAsyncMode
 import com.winlator.cmod.ui.settings.envPut
 import com.winlator.cmod.ui.settings.envValue
 import com.winlator.cmod.ui.settings.filterDxvkForVkd3d
+import com.winlator.cmod.ui.settings.graphicsDriverLabel
 import com.winlator.cmod.ui.settings.installAdrenoDriver
 import com.winlator.cmod.ui.settings.installRuntimeComponent
 import com.winlator.cmod.ui.settings.installWineRuntimeComponent
@@ -138,7 +139,7 @@ private class ContainerEditorStateV2(
 
     var runtime by mutableStateOf(editing?.wineVersion.orEmpty())
     var name by mutableStateOf(editing?.name ?: "Container-${manager.nextContainerId}")
-    var screen by mutableStateOf(editing?.screenSize ?: Container.DEFAULT_SCREEN_SIZE)
+    var screen by mutableStateOf(editing?.screenSize ?: Container.defaultScreenSizeFor(context))
     var audio by mutableStateOf(editing?.audioDriver ?: Container.DEFAULT_AUDIO_DRIVER)
     var oboeProfile by mutableStateOf(editing?.getExtra("oboeProfile", "low") ?: "low")
     var oboeApi by mutableStateOf(editing?.getExtra("oboeApi", "auto") ?: "auto")
@@ -185,6 +186,7 @@ private class ContainerEditorStateV2(
             "freedreno"
         } else Container.DEFAULT_GRAPHICS_DRIVER
     )
+    var graphicsWrapper by mutableStateOf(editing?.getGraphicsWrapper() ?: Container.DEFAULT_GRAPHICS_WRAPPER)
     var graphicsConfig by mutableStateOf(
         (editing?.graphicsDriverConfig ?: Container.DEFAULT_GRAPHICSDRIVERCONFIG).let { original ->
             if (readConfig(original, "version", ';').isBlank()) writeConfig(original, "version", preferredDriver, ';') else original
@@ -212,6 +214,8 @@ private class ContainerEditorStateV2(
     var vkd3dLevel by mutableStateOf(readConfig(wrapperConfig, "vkd3dLevel", ',').ifBlank { "12_1" })
     var frameRate by mutableStateOf(readConfig(wrapperConfig, "framerate", ',').ifBlank { "0" })
     var maxFrameLatency by mutableStateOf(readConfig(wrapperConfig, "maxFrameLatency", ',') == "1")
+    var anisotropy by mutableStateOf(readConfig(wrapperConfig, "anisotropy", ',').ifBlank { "0" })
+    var lodBias by mutableStateOf(readConfig(wrapperConfig, "lodBias", ',').ifBlank { "0" })
     var async by mutableStateOf(readConfig(wrapperConfig, "async", ',') == "1")
     var asyncCache by mutableStateOf(readConfig(wrapperConfig, "asyncCache", ',') == "1")
     var ddrawWrapper by mutableStateOf(readConfig(wrapperConfig, "ddrawrapper", ',').ifBlank { "none" })
@@ -315,7 +319,7 @@ private class ContainerEditorStateV2(
         renderer, rendererPresentMode, rendererDriver, filterMode, surfaceFormat, trueDisplayX,
         displayXPerformanceMode, displayXPresentAtRefreshRate, displayXBackPressure,
         displayXPrecisePresentation, frameGenBackend, lsfgMultiplier,
-        lsfgFlowScale, graphicsDriver, graphicsConfig,
+        lsfgFlowScale, graphicsDriver, graphicsWrapper, graphicsConfig,
         wrapper, wrapperConfig, emulator, fexVersion, boxVersion, fexPreset, boxPreset, exclusive, xinput, dinput,
         syncCpu, startup, openGlDefaultInitialized, autoMesaGlVersionOverride, envVars,
         cpu64.joinToString(), cpu32.joinToString(), components.entries.sortedBy { it.key }.joinToString()
@@ -370,6 +374,7 @@ internal fun ContainerEditorV2(editId: Int?, onBack: () -> Unit, onCreated: () -
 
     val screenEntries = remember { context.resources.getStringArray(R.array.screen_size_entries).toList() }
     val graphicsEntries = remember { context.resources.getStringArray(R.array.graphics_driver_entries).toList() }
+    val graphicsWrapperEntries = remember { context.resources.getStringArray(R.array.graphics_wrapper_entries).toList() }
     val wrapperEntries = remember { context.resources.getStringArray(R.array.dxwrapper_entries).toList() }
     val audioEntries = remember { context.resources.getStringArray(R.array.audio_driver_entries).toList() }
     val localeEntries = remember { listOf("Default") + context.resources.getStringArray(R.array.some_lc_all).toList() }
@@ -448,6 +453,7 @@ internal fun ContainerEditorV2(editId: Int?, onBack: () -> Unit, onCreated: () -
         container.setCPUListWoW64(state.cpu32.indices.filter { state.cpu32[it] }.joinToString(","))
         container.setSyncCpuTopology(state.syncCpu)
         container.setGraphicsDriver(state.graphicsDriver)
+        container.setGraphicsWrapper(state.graphicsWrapper)
         container.setGraphicsDriverConfig(state.graphicsConfig)
         container.setRendererNative(state.renderer == "EGL")
         container.setRendererPresentMode(state.rendererPresentMode)
@@ -546,6 +552,7 @@ internal fun ContainerEditorV2(editId: Int?, onBack: () -> Unit, onCreated: () -
                 put("midiSoundFont", state.soundFont)
                 put("lc_all", state.locale)
                 put("extraData", JSONObject()
+                    .put("graphicsWrapper", state.graphicsWrapper)
                     .put("hudMode", state.hudMode.toString())
                     .put("mouseWarpOverride", state.mouseWarp)
                     .put("useDisplayX", "0")
@@ -640,7 +647,7 @@ internal fun ContainerEditorV2(editId: Int?, onBack: () -> Unit, onCreated: () -
                     item(category) {
                         ContainerCategoryV2(
                             category, state, runtimeChoices, arm64, screenEntries, graphicsEntries,
-                            wrapperEntries, audioEntries, localeEntries, soundFonts, gpuNames, fexPresets,
+                            graphicsWrapperEntries, wrapperEntries, audioEntries, localeEntries, soundFonts, gpuNames, fexPresets,
                             boxPresets, catalog, installing, ::installWine, ::installDriver, ::installRuntime
                         )
                     }
@@ -663,7 +670,7 @@ internal fun ContainerEditorV2(editId: Int?, onBack: () -> Unit, onCreated: () -
                     item(category) {
                         ContainerCategoryV2(
                             category, state, runtimeChoices, arm64, screenEntries, graphicsEntries,
-                            wrapperEntries, audioEntries, localeEntries, soundFonts, gpuNames, fexPresets,
+                            graphicsWrapperEntries, wrapperEntries, audioEntries, localeEntries, soundFonts, gpuNames, fexPresets,
                             boxPresets, catalog, installing, ::installWine, ::installDriver, ::installRuntime
                         )
                     }
@@ -698,6 +705,7 @@ private fun ContainerCategoryV2(
     arm64: Boolean,
     screenEntries: List<String>,
     graphicsEntries: List<String>,
+    graphicsWrapperEntries: List<String>,
     wrapperEntries: List<String>,
     audioEntries: List<String>,
     localeEntries: List<String>,
@@ -840,7 +848,7 @@ private fun ContainerCategoryV2(
                 SettingsDivider()
                 SettingChoice("Renderer", s.renderer, listOf("Vulkan", "EGL")) {
                     s.renderer = it
-                    if (it == "EGL" && s.filterMode > 1) s.filterMode = 0
+                    if (it == "EGL" && s.filterMode !in listOf(0, 1, 2, 5)) s.filterMode = 0
                 }
                 SettingsDivider()
                 SettingChoice(
@@ -883,16 +891,11 @@ private fun ContainerCategoryV2(
                         }
                     }
                     SettingsDivider()
-                    val filters = if (s.renderer == "EGL") listOf("Bilinear", "Nearest neighbor")
-                    else listOf(
-                        "Bilinear",
-                        "Nearest neighbor",
-                        "Snapdragon Super Resolution",
-                        "AMD FidelityFX Super Resolution",
-                        "Lanczos 2 (16-tap)"
-                    )
-                    SettingChoice("Texture Filter", filters.getOrElse(s.filterMode) { filters.first() }, filters) {
-                        s.filterMode = filters.indexOf(it).coerceAtLeast(0)
+                    val filters = if (s.renderer == "EGL") listOf(0 to "Bilinear", 1 to "Nearest neighbor", 2 to "Snapdragon Super Resolution", 5 to "SGSR HQ (edge direction)")
+                    else listOf(0 to "Bilinear", 1 to "Nearest neighbor", 2 to "Snapdragon Super Resolution", 5 to "SGSR HQ (edge direction)", 3 to "AMD FidelityFX Super Resolution", 4 to "Lanczos 2 (16-tap)")
+                    val labels = filters.map { it.second }
+                    SettingChoice("Texture Filter", filters.firstOrNull { it.first == s.filterMode }?.second ?: labels.first(), labels) {
+                        s.filterMode = filters.firstOrNull { entry -> entry.second == it }?.first ?: 0
                     }
                 }
             }
@@ -911,10 +914,18 @@ private fun ContainerCategoryV2(
             }
             SettingsCard {
                 SettingChoice(
-                    "Graphics Driver",
-                    graphicsEntries.firstOrNull { StringUtils.parseIdentifier(it).equals(s.graphicsDriver, true) } ?: s.graphicsDriver,
+                    "OpenGL Driver",
+                    graphicsDriverLabel(graphicsEntries, s.graphicsDriver),
                     graphicsEntries
                 ) { s.selectGraphicsDriver(StringUtils.parseIdentifier(it)) }
+                SettingsDivider()
+                SettingChoice(
+                    "Vulkan Wrapper",
+                    graphicsWrapperEntries.firstOrNull {
+                        StringUtils.parseIdentifier(it).equals(s.graphicsWrapper, true)
+                    } ?: s.graphicsWrapper,
+                    graphicsWrapperEntries
+                ) { s.graphicsWrapper = StringUtils.parseIdentifier(it) }
                 catalog?.let { c ->
                     SettingsDivider()
                     SettingDriverChoice("Driver Version", s.driverVersion, c.drivers, installing, installDriver) {
@@ -1010,6 +1021,18 @@ private fun ContainerCategoryV2(
                     SettingsDivider()
                     SettingToggle("Max Frame Latency", s.maxFrameLatency) {
                         s.maxFrameLatency = it; s.wrapperValue("maxFrameLatency", if (it) "1" else "0")
+                    }
+                    SettingsDivider()
+                    SettingChoice("Anisotropic filtering", if (s.anisotropy == "0") "Game default" else "${s.anisotropy}×",
+                        listOf("Game default", "2×", "4×", "8×", "16×")) {
+                        s.anisotropy = if (it == "Game default") "0" else it.removeSuffix("×")
+                        s.wrapperValue("anisotropy", s.anisotropy)
+                    }
+                    SettingsDivider()
+                    SettingChoice("Texture sharpness", if (s.lodBias == "0") "Game default" else if (s.lodBias == "auto") "Auto" else s.lodBias,
+                        listOf("Game default", "Auto", "-0.25", "-0.5", "-0.75", "-1.0")) {
+                        s.lodBias = when (it) { "Game default" -> "0"; "Auto" -> "auto"; else -> it }
+                        s.wrapperValue("lodBias", s.lodBias)
                     }
                     val asyncMode = dxvkAsyncMode(s.dxvkVersion)
                     if (asyncMode != DxvkAsyncMode.NONE) {
